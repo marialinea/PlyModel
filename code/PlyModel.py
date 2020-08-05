@@ -32,7 +32,9 @@ class PlyModel:
         self.group_num = None       # holds the number of continuous groups of polygons
         self.groups_index = None    # holds the polygon indices for each group
         self.groups_faces = None    # holds the polygon faces for each group
-        self.non_manifold = None    # array containing the polygons that are not connected to two edges
+        self.manifold = None        # if True, the mesh contains manifold geometry
+        self.more_neighbours = None # holds the polygon that have more than three neighbouring polygons
+        self.non_manifold = None    # array containing the polygons that are not connected to two edges           
         self.normal_vectors = None  # holds the normal vectors of all the polygons
         
     def ReadPly(self):
@@ -530,6 +532,20 @@ class PlyModel:
            
                 decrement = np.where(self.half_edges[:,-1] > polygon_num)
                 self.half_edges[decrement[0],-1] -= 1                            # decrementing the associated polygon numbers which are larger than the deleted polygon
+                
+                
+                # deleting the half edges in the undirected half edge array
+                polygon_num = self.sorted_edges[np.where(self.sorted_edges[:,:-1] == rm_vertices[0])[0][-1]][-1]   # associated polygon number of the single polygon
+                indices = np.where(self.sorted_edges[:,-1] == polygon_num)
+                decrement = np.sort(self.sorted_edges[indices,0])[0]
+                decrement = list(decrement[::-1])
+                self.sorted_edges = np.delete(self.sorted_edges, indices, axis=0)
+                
+                for j in decrement:
+                    self.sorted_edges[np.where(self.sorted_edges[:,:-1] > j)] -= 1
+           
+                decrement = np.where(self.sorted_edges[:,-1] > polygon_num)
+                self.sorted_edges[decrement[0],-1] -= 1                            # decrementing the associated polygon numbers which are larger than the deleted polygon
                    
                 
                 self.N -= 3                                               # correcting the number of vertices
@@ -591,9 +607,14 @@ class PlyModel:
     def Manifold(self, x_lim=[], y_lim=[], z_lim=[], multiplier=1, visualize=False):
         """
         The function runs a simple check whether the object represented in the data set is manifold; 
-        if each edge is shared by exactly two faces. If the 
-        model is non-manifold the method finds the number of edges that are not shared by exactly two 
-        polygons and if any faces are sharing a common vertex but no edges.
+        if each edge is shared by exactly two faces. In the case of manifold geometry the following
+        is true:
+               V + F - E = 2,
+        where V is the number of vertices, F is the number of faces and E is number of edges.
+        
+        If the model is non-manifold the method finds the number of edges that are not shared by exactly two 
+        polygons and if any faces are sharing a common vertex but no edges. It also identifies any polygons 
+        with more than three neighbours.
         
         
         Parameters
@@ -609,11 +630,14 @@ class PlyModel:
             visualize : bool, optional
                 If True the functions plots the polygons that contain edges that are not connected to
                 exactly two faces on top of the other polygons and the shared vertices. 
-                The unconnected polygons are red, while the others are green. The default is False
+                The unconnected polygons are red, while the others are green. Polygons with more than
+                three neighbours has a ray pointing out/in of the polygon. The default is False.
         """
         
         print("Checking if the model is manifold")
         
+        
+        constant = self.N + self.M - len(self.half_edges)*0.5
         
         # checking if each half-edges is connected to exactly two faces
         
@@ -640,17 +664,17 @@ class PlyModel:
                     i += counter
                     break
                 
-        Manifold =  True 
+        self.manifold =  True                      # initial assumption that the mesh is manifold
         
         appear_once = len(np.where(HalfEdgeCounter == 1)[0])
         appear_twice = len(np.where(HalfEdgeCounter == 2)[0])
         appear_more = len(np.where(HalfEdgeCounter > 2)[0])
-               
+        
         if appear_once > 0 or appear_more > 0:
             print("Some edges are not shared by exactly two faces")
-            Manifold = False
+            self.manifold = False
             
-        if Manifold:
+        if self.manifold and constant == 2:
             print("The model is manifold")
             print("------------------------------------------")
         else:
@@ -668,9 +692,24 @@ class PlyModel:
                             sharing_groups.append(key)
                             break
                 if len(sharing_groups)>1:
-                    shared_vertices["{}".format(i)] = sharing_groups 
-           
-            # Identifying the polygons that are constructed by edges that are not shared by exactly two faces
+                    shared_vertices["{}".format(i)] = sharing_groups
+                    
+            # identifying the polygons with more than three neighbours
+            
+            adjacency_list = defaultdict(list) 
+            for i in range(self.M): 
+                for j in range(self.M): 
+                    if self.adjacency_mat[i][j] == 1: 
+                        adjacency_list[i].append(j) 
+                            
+            more_neighbours = []            
+            for key, values in adjacency_list.items():
+                if len(values) > 3:
+                    more_neighbours.append(int(key))
+
+            self.more_neighbours = np.array(more_neighbours)
+            
+            # identifying the polygons that are constructed by edges that are not shared by exactly two faces
             
             NonManifold = []
             for i in range(len(Edges)):
@@ -686,12 +725,13 @@ class PlyModel:
             self.non_manifold = np.unique(np.array(NonManifold))
             self.non_manifold = self.non_manifold.astype("int64")
             
-            
-                
             if not shared_vertices:
                 print("Number of half-edges appearing once: {}".format(appear_once))
                 print("Number of half-edges appearing twice: {}".format(appear_twice))
                 print("Number of half-edges appearing more than twice: {}".format(appear_more))
+            elif self.manifold == True and constant != 2:
+                for key, values in shared_vertices.items():
+                    print("Vertex {} is shared between {}".format(key, values))
             else:
                 print("Number of half-edges appearing once: {}".format(appear_once))
                 print("Number of half-edges appearing twice: {}".format(appear_twice))
@@ -704,22 +744,36 @@ class PlyModel:
                 fig = plt.figure()
                 ax = fig.add_subplot(projection="3d")
                 
-                v = self.vertices*multiplier
-                faces = self.faces[self.non_manifold]
-    
-                pc = art3d.Poly3DCollection(v[self.faces], facecolors="lightgreen", edgecolor=(0,0,0,0.1))
-                ax.add_collection(pc)             
-       
-                pc = art3d.Poly3DCollection(v[faces], facecolors="darkred", edgecolor=(0,0,0,0.1))
-                ax.add_collection(pc)
+                eps = 1e-7
+                for i in range(self.M):
+                    vtx = self.faces[i]
+                    tri = art3d.Poly3DCollection([self.vertices[vtx]*multiplier])
+                    if i in self.non_manifold:
+                        tri.set_color((0.811, 0.149, 0.196,0.8))
+                    else:
+                        tri.set_color((0.188, 0.909, 0.329,0.8))
+                    if i in self.more_neighbours:
+                        x1, y1, z1 = self.vertices[self.faces[i][0]]
+                        x2, y2, z2 = self.vertices[self.faces[i][1]]
+                        x3, y3, z3 = self.vertices[self.faces[i][2]]
+                        centroid = (np.array([((x1 + x2 + x3) / 3), ((y1 + y2 + y3) / 3), ((z1 + z2 + z3) / 3)]) + eps)*multiplier
+                        X, Y, Z = centroid
+                        U, V, W = (self.normal_vectors[i,1:]/np.linalg.norm(self.normal_vectors[i,1:]))*multiplier
+                    
+                        ax.quiver(X,Y,Z,U,V,W,arrow_length_ratio=0.1)
+                        
+                    tri.set_edgecolor("black")
+                    
+                    ax.add_collection3d(tri)
                 
+               
                 
                 for key in shared_vertices:
                     x = self.vertices[int(key)][0]*multiplier
                     y = self.vertices[int(key)][1]*multiplier
                     z = self.vertices[int(key)][2]*multiplier
                     
-                    ax.scatter(x,y,z, color="magenta", marker="o")
+                    ax.scatter(x,y,z, s=10**2, color="m", marker="o")
                 
                 if not x_lim and not y_lim and not z_lim:
                     x_lim = [np.min(self.vertices[:,0]),np.max(self.vertices[:,0])]
@@ -743,7 +797,6 @@ class PlyModel:
             
             
         return None
-    
     
     def NormalVectors(self):
         """
@@ -822,14 +875,15 @@ class PlyModel:
     
     def RayCasting(self):
         """
-        The function determines if all the polygons are facing outwards or inwards. This is done with the Möller–Trumbore ray-triangle
-        intersection algorithm. If facing inwards all the polygons are flipped. 
+        The function determines if all the polygons are facing outwards or inwards. This is done through casting a ray
+        from each polygon and register each time the ray intersect another polygon. If the polygons are all facing inward
+        the number of intersections are an odd number, and even if facing outwards. If facing inwards all the polygons are flipped. 
         """
         
         print("Determining inward or outward orientation of polygons")
         
         # calculating the centroids for each polygon
-        eps = 1e-7
+
         centroids = np.zeros([self.M,3])
 
         for i in range(self.M):
@@ -837,47 +891,40 @@ class PlyModel:
             x2, y2, z2 = self.vertices[self.faces[i][1]]
             x3, y3, z3 = self.vertices[self.faces[i][2]]
             
-            centroids[i] = np.array([((x1 + x2 + x3) / 3), ((y1 + y2 + y3) / 3), ((z1 + z2 + z3) / 3)]) + eps     # adding a small displacement
+            centroids[i] = np.array([((x1 + x2 + x3) / 3), ((y1 + y2 + y3) / 3), ((z1 + z2 + z3) / 3)]) + (0 * self.normal_vectors[i,1:]/np.linalg.norm(self.normal_vectors[i,1:]))     # adding a small displacement
         
-            
-        intersection = {}                                           # boolean dictionary to hold information whether the a ray is intersecting a polygon
-        for key in self.groups_index:
-            intersection[key] = 0                                   # given the initial value as False
+        
         
         Recalculate = False                                         # if True after the iterations, the half-edges and normal vectors are recalculated
+        intersections = {}
+
         for key, values in self.groups_index.items():
-            NoFlip = True
-            while NoFlip:
-                for i in values[0]:
-                    if not NoFlip:
-                        break
-                    origin = centroids[i]                           # origin of the ray
-                    normal = self.normal_vectors[i]/np.linalg.norm(self.normal_vectors[i]) 
-                    direction = normal[1:]                          # normalized direction of the ray
-                    for j in range(len(values[0])):
-                        if i != j:
-                            v0 = np.array([self.vertices[self.faces[j][0]][0], self.vertices[self.faces[j][0]][1], self.vertices[self.faces[j][0]][2]])
-                            v1 = np.array([self.vertices[self.faces[j][1]][0], self.vertices[self.faces[j][1]][1], self.vertices[self.faces[j][1]][2]])
-                            v2 = np.array([self.vertices[self.faces[j][2]][0], self.vertices[self.faces[j][2]][1], self.vertices[self.faces[j][2]][2]])
-                                    
-                            t = self.MollerTrumboreAlgo(direction, origin, v0, v1, v2)
-                           
-                            if t >= 0:                                
-                                NoFlip = False
-                                Recalculate = True                    
-                                intersection[key] = 1                 # setting the value as True, meaning the polygons need to be flipped
-                                break
-                            else:
-                                continue
+            intersect = np.zeros(len(values[0]))
+            for i in values[0]:
+                origin = centroids[i]                           # origin of the ray
+                direction = self.normal_vectors[i,1:]/np.linalg.norm(self.normal_vectors[i,1:])
+                for j in range(len(values[0])):
+                    if i != j:
+                        v0 = np.array([self.vertices[self.faces[j][0]][0], self.vertices[self.faces[j][0]][1], self.vertices[self.faces[j][0]][2]])
+                        v1 = np.array([self.vertices[self.faces[j][1]][0], self.vertices[self.faces[j][1]][1], self.vertices[self.faces[j][1]][2]])
+                        v2 = np.array([self.vertices[self.faces[j][2]][0], self.vertices[self.faces[j][2]][1], self.vertices[self.faces[j][2]][2]])
+  
+                        result = self.RayTriangleIntersect(origin, direction, v0, v1, v2)          # if an intersection occurs, the function return True
+                        
+                        if result:
+                            intersect[i] += 1
+
+            intersections[key] = intersect
             
-            
-        for key in intersection:
-            if intersection[key] == 1:
-                for i in self.groups_index[key]:
-                    self.faces[i][1], self.faces[i][2] = self.faces[i][2], self.faces[i][1]       # flipping polygons
-                print("Inward orientation detected for {}".format(key))    
-        
-        
+           
+        for key, values in intersections.items():
+            if not np.any(values == 0):                                      # since the model is topological consistent, if facing outwards at least one polygon should have zero intersections 
+                for j in self.groups_index[key][0]:
+                    self.faces[j][1], self.faces[j][2] = self.faces[j][2], self.faces[j][1]       # flipping polygons
+                    Recalculate = True
+                print("Detected inward orientation for {}".format(key))
+          
+                          
         if Recalculate:
             print("Recalculating the half-edges and normal vectors")
             self.HalfEdges()
@@ -890,42 +937,78 @@ class PlyModel:
             print("------------------------------------------") 
         
         return None
-    
-    
+     
     @staticmethod
-    def MollerTrumboreAlgo(direction, origin, v0, v1, v2):
+    def RayTriangleIntersect(origin, direction, v0, v1, v2):
+        """
+
+        Parameters
+        ----------
+        origin : float
+            3D cartesian coordinates to the ray's origin.
+        direction : float
+            Normalized direction of the ray.
+        v0 : float
+            3D cartesian coordinates to the first vertex belonging to the polygon that spans the plane.
+        v1 : float
+            3D cartesian coordinates to the second vertex belonging to the polygon that spans the plane.
+        v2 : float
+            3D cartesian coordinates to the third vertex belonging to the polygon that spans the plane.
+
+        Returns
+        -------
+        bool
+            If True an intersection occurs, if False, no intersection.
+
+        """
+        
+        # calculates normal vector to the plane
         v0v1 = v1-v0
         v0v2 = v2-v0
-        pvec = np.cross(direction,v0v2)
+        N = np.cross(v0v1,v0v2)
     
-        det = np.dot(v0v1,pvec)
+        eps = 1e-7
+        NdotRayDirection = np.dot(N, direction)
+        
     
-        if det < 0.000001:
-            return float('-inf')
+        if NdotRayDirection > -eps and NdotRayDirection < eps:            # the ray and plane are parallel
+            return False
     
-        invDet = 1.0 / det
-        tvec = origin-v0
-        u = np.dot(tvec,pvec) * invDet
     
-        if u < 0 or u > 1:
-            return float('-inf')
+        t = (np.dot(N,v0-origin))/NdotRayDirection
+        if t < 0:                                                         # the polygon is behind the ray
+            return False
     
-        qvec = np.cross(tvec,v0v1)
-        v = np.dot(direction,qvec) * invDet
-    
-        if v < 0 or u + v > 1:
-            return float('-inf')
+        P = origin + t*direction
 
-        t = np.dot(v0v2,qvec) * invDet
+        DotProduct = np.dot(direction, P-origin)
+        if DotProduct < 0:                                             # if negative, the camera direction is backward
+            return False
+        
+        edge0 = v1-v0
+        vp0 = P-v0
+        C = np.cross(edge0,vp0)
+        if np.dot(N,C) < 0:
+            return False
+    
+        edge1 = v2-v1
+        vp1 = P-v1
+        C = np.cross(edge1,vp1)
+        if np.dot(N,C) < 0:
+            return False
+    
+        edge2 = v0-v2
+        vp2 = P-v2
+        C = np.cross(edge2,vp2)
+        if np.dot(N,C) < 0:
+            return False
 
-        return t
+        return True
     
    
-    def Visualize(self, x_lim=[], y_lim=[], z_lim=[], multiplier = 1, group=None, normals=False):
+    def Visualize(self, x_lim=[], y_lim=[], z_lim=[], multiplier = 1, group=None, polygons=None, normals=False):
         """
-        The function plots the vertices and faces in a 3D-plot. If the data set is one continuous group the plot will be unicolored, if not each group will
-        have a different color.
-
+        The function plots the vertices and faces in a 3D-plot.
         Parameters
         ----------
         x_lim : twoelement list, optional
@@ -938,6 +1021,9 @@ class PlyModel:
             Multiplies the vertex coordinates with the factor "multiplier". The default is 1.
         group : int or list, optional
             Specify which group(s) to visualize. Default is None, which plots all of the groups.
+        polygons: int or list, optional
+            Specify which polygon(s) to visualize in a different color (black). If this is specified the group wise
+            visualization is not possible. Default is None.
         normals : bool, optional
             Plots normal vectors if True. Default is False
 
@@ -947,35 +1033,32 @@ class PlyModel:
 
         """
         
+        if group != None and polygons != None:
+            raise ValueError("Both parameters 'group' and 'polygons' are specified, one has to be None.")
             
         fig = plt.figure()
         ax = fig.add_subplot(projection="3d")
     
         v = self.vertices*multiplier
         
-        
-        if normals:
-            eps = 1e-7
-            centroids = np.zeros([self.M,3])
+        centroids = np.zeros([self.M,3])
 
-            for i in range(self.M):
-                x1, y1, z1 = self.vertices[self.faces[i][0]]
-                x2, y2, z2 = self.vertices[self.faces[i][1]]
-                x3, y3, z3 = self.vertices[self.faces[i][2]]
+        for i in range(self.M):
+            x1, y1, z1 = self.vertices[self.faces[i][0]]
+            x2, y2, z2 = self.vertices[self.faces[i][1]]
+            x3, y3, z3 = self.vertices[self.faces[i][2]]
                 
-                centroids[i] = (np.array([((x1 + x2 + x3) / 3), ((y1 + y2 + y3) / 3), ((z1 + z2 + z3) / 3)]) + eps)*multiplier
+            centroids[i] = (np.array([((x1 + x2 + x3) / 3), ((y1 + y2 + y3) / 3), ((z1 + z2 + z3) / 3)]) + (0.01 * self.normal_vectors[i,1:]/np.linalg.norm(self.normal_vectors[i,1:])))*multiplier
             
         
-        if self.group_num == 1 or self.group_num == None and group == None:
+        if (self.group_num == 1 and group == None and polygons == None) or (self.group_num == None and group == None and polygons == None):
             f = self.faces
             
             r = np.random.rand()
             b = np.random.rand()
             g = np.random.rand()
-            color = (r, g, b,0.2)
+            color = (r, g, b)
             
-            pc = art3d.Poly3DCollection(v[f], facecolors=color, edgecolor=(0,0,0,0.1))
-            ax.add_collection(pc)
             
             if normals:
                 for i in range(self.M):
@@ -983,29 +1066,29 @@ class PlyModel:
                     U, V, W = (self.normal_vectors[i,1:]/np.linalg.norm(self.normal_vectors[i,1:]))*multiplier
                     
                     ax.quiver(X,Y,Z,U,V,W,arrow_length_ratio=0.01)
-            
-        elif group != None:
+                    
+                color = (r, g, b,0.2)
+            pc = art3d.Poly3DCollection(v[f], facecolors=color, edgecolor=(0,0,0,0.1))
+            ax.add_collection(pc)
+        elif group != None and polygons == None:
             
             if isinstance(group, int):
                 f = self.groups_faces["group{}".format(group)]
-                
-                
+
                 r = np.random.rand()
                 b = np.random.rand()
                 g = np.random.rand()
                 color = (r, g, b)
                 
-               
-                  
                 if normals:         
                     for i in self.groups_index["group{}".format(group)]:
                         for j in i:
                             X, Y, Z = centroids[j]
-                            U, V, W = (self.normal_vectors[i,1:]/np.linalg.norm(self.normal_vectors[i,1:]))*multiplier
-                                
+                            U, V, W = (self.normal_vectors[j,1:]/np.linalg.norm(self.normal_vectors[j,1:]))*multiplier
                             ax.quiver(X,Y,Z,U,V,W,arrow_length_ratio=0.01)
+                        
+                    color = (r, g, b, 0.2)
                 
-                 
                 pc = art3d.Poly3DCollection(v[f], facecolors=color, edgecolor=(0,0,0,0.1))
                 ax.add_collection(pc)
                 
@@ -1017,39 +1100,88 @@ class PlyModel:
                     b = np.random.rand()
                     g = np.random.rand()
                     color = (r, g, b)
-                     
-                    pc = art3d.Poly3DCollection(v[f], facecolors=color, edgecolor=(0,0,0,0.1))
-                    ax.add_collection(pc)
                 
                     if normals:         
                         for k in self.groups_index["group{}".format(group[i])]:
                             for j in k:
                                 X, Y, Z = centroids[j]
-                                U, V, W = (self.normal_vectors[i,1:]/np.linalg.norm(self.normal_vectors[i,1:]))*multiplier
+                                U, V, W = (self.normal_vectors[j,1:]/np.linalg.norm(self.normal_vectors[j,1:]))*multiplier
                                     
                                 ax.quiver(X,Y,Z,U,V,W,arrow_length_ratio=0.01)
+                        color = (r, g, b,0.2)
                     
+                    pc = art3d.Poly3DCollection(v[f], facecolors=color, edgecolor=(0,0,0,0.1))
+                    ax.add_collection(pc) 
             else:
                 raise TypeError("group parameter is neither list or int, but {}".format(type(group)))
-        else:
+        elif polygons == None:
+            
             for i in range(self.group_num): 
+
                 f = self.groups_faces["group{}".format(i+1)]
 
                 r = np.random.rand()
                 b = np.random.rand()
                 g = np.random.rand()
                 color = (r, g, b)
-
+                
                 pc = art3d.Poly3DCollection(v[f], facecolors=color, edgecolor=(0,0,0,0.1))
-                
                 ax.add_collection(pc)
-                
+
             if normals:
                 for i in range(self.M):
                     X, Y, Z = centroids[i]
                     U, V, W = (self.normal_vectors[i,1:]/np.linalg.norm(self.normal_vectors[i,1:]))*multiplier
                     
                     ax.quiver(X,Y,Z,U,V,W,arrow_length_ratio=0.01)
+                color = (r,g,b,0.2)
+                
+            
+        elif polygons != None and group == None:
+            r = np.random.rand()
+            b = np.random.rand()
+            g = np.random.rand()
+            color = (r, g, b, 0.2)
+            if isinstance(polygons, int):
+
+                for i in range(self.M):
+                    vtx = self.faces[i]
+                    tri = art3d.Poly3DCollection([self.vertices[vtx]*multiplier])
+                    if i == polygons and normals:
+                        tri.set_color("black")
+                        X, Y, Z = centroids[i]
+                        U, V, W = (self.normal_vectors[i,1:]/np.linalg.norm(self.normal_vectors[i,1:]))*multiplier
+                    
+                        ax.quiver(X,Y,Z,U,V,W,arrow_length_ratio=0.01)
+                    elif i == polygons and not normals:
+                        tri.set_color("black")
+                    else:
+                        tri.set_color(color)
+                    tri.set_edgecolor("cyan")
+                    ax.add_collection3d(tri)
+
+            elif isinstance(polygons, list):
+                
+                for i in range(self.M):
+                    vtx = self.faces[i]
+                    tri = art3d.Poly3DCollection([self.vertices[vtx]*multiplier])
+                    if i in polygons and normals:
+                        tri.set_color("black")
+                        X, Y, Z = centroids[i]
+                        U, V, W = (self.normal_vectors[i,1:]/np.linalg.norm(self.normal_vectors[i,1:]))*multiplier*2
+                    
+                        ax.quiver(X,Y,Z,U,V,W,arrow_length_ratio=0.01)
+                    elif i in polygons and not normals:
+                        tri.set_color("black")
+                    else:
+                        tri.set_color(color)
+                    tri.set_edgecolor("cyan")
+                    ax.add_collection3d(tri)
+            
+            else:
+                raise TypeError("polygons parameter is neither list or int, but {}".format(type(polygons)))                
+        
+            
         
         if not x_lim and not y_lim and not z_lim:
             x_lim = [np.min(self.vertices[:,0]),np.max(self.vertices[:,0])]
@@ -1070,6 +1202,7 @@ class PlyModel:
 
         return None
     
+
     def WriteStaticVertices(self, path=None):
         """
         The function writes the vertex number, followed by its x, y and z coordinates to a .csv file. There is 
@@ -1143,10 +1276,52 @@ class PlyModel:
         return None
     
     def LooseGeometry(self):
-        
+        """
+        A collection of class methods that ensures that the model
+        contains no loose geometry.
+
+        """
         self.SingleVertex()
         self.UniqueVertices()
         self.UniquePolygons()
         
         return None
    
+    def GroupIdentification(self):
+        """
+        The methods listed below contribute to identify the 
+        continuous groups in the data set.
+        """
+        self.HalfEdges()
+        self.RemoveSingles()
+        self.FindingGroups()
+        
+        return None   
+    
+    def PolygonOrientation(self, vis=False):
+        """
+        The assortment of methods determine whether the geometry is manifold or not,
+        and in the case of manifold geometry ensures that the polygons are all faced 
+        outward.
+
+        Parameters
+        ----------
+        vis : bool, optional
+            If True the functions plots the polygons that contain edges that are not 
+            connected to exactly two faces on top of the other polygons (given that the
+            mesh is manifold).  
+            The unconnected polygons are red, while the others are green.The default is False.
+
+        """
+        
+        self.NormalVectors()
+        self.Manifold(visualize=vis)
+        
+        if self.Manifold():
+            self.FlippPolygons()
+            self.RayCasting()
+        else:
+            print("The mesh needs to be manifold before polygon orientation can be \
+                  made consistent.")
+        return None
+    
