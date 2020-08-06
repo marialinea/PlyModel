@@ -678,7 +678,8 @@ class PlyModel:
             print("The model is manifold")
             print("------------------------------------------")
         else:
-            print("The model is non-manifold")
+            print("The model is non-manifold \nIdentifying the problem(s)...")
+            
             
            # identifying shared vertices among the groups
             shared_vertices = {}
@@ -1293,6 +1294,7 @@ class PlyModel:
         continuous groups in the data set.
         """
         self.HalfEdges()
+        self.AdjacentPolygons()
         self.RemoveSingles()
         self.FindingGroups()
         
@@ -1317,11 +1319,10 @@ class PlyModel:
         self.NormalVectors()
         self.Manifold(visualize=vis)
         
-        if self.Manifold():
+        if self.manifold:
             self.FlippPolygons()
             self.RayCasting()
         else:
-            print("The mesh needs to be manifold before polygon orientation can be \
-                  made consistent.")
+            print("The mesh needs to be manifold before polygon orientation can be made consistent.")
         return None
     
