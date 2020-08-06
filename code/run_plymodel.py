@@ -1,6 +1,6 @@
 """
 This is a test program designed to take a .ply file and its path as
-input from the command line and check whether is it ready for 
+input from the command line and check if it's ready for 
 rendering through the PlyModel class. 
 """
 
