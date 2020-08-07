@@ -9,15 +9,12 @@ import PlyModel as ply
 
 filename = input("Filename or path to .ply file: \n")
 
-words = filename.split(".")
-if words[-1] != "ply":
-    print("The given file is not a .ply file.")
     
-else:
+instance = ply.PlyModel(filename)                # create class instance
     
-    instance = ply.PlyModel(filename)                # create class instance
-    
-    instance.ReadPly()                               
-    instance.LooseGeometry()                         
-    instance.GroupIdentification()
-    instance.PolygonOrientation()
+instance.ReadPly()                               
+instance.LooseGeometry()                         
+instance.GroupIdentification()
+instance.PolygonOrientation()
+
+instance.Visualize()
