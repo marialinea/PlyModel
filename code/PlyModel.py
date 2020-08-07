@@ -628,10 +628,11 @@ class PlyModel:
             multiplier : int or float, optional
                 Multiplies the vertex coordinates with the factor "multiplier". The default is 1.
             visualize : bool, optional
-                If True the functions plots the polygons that contain edges that are not connected to
-                exactly two faces on top of the other polygons and the shared vertices. 
-                The unconnected polygons are red, while the others are green. Polygons with more than
-                three neighbours has a ray pointing out/in of the polygon. The default is False.
+                If True the functions plot and highlight problematic geometry. Polygons that contain 
+                edges that are not connected to exactly two polygons are colored red, while the 
+                non-problematic polygons are green. Polygons with more than three neighbours has 
+                a ray pointing out/in of the polygon (depending on orientation). Vertices shared 
+                among groups are colored magenta. The default is False.
         """
         
         print("Checking if the model is manifold")
@@ -745,7 +746,6 @@ class PlyModel:
                 fig = plt.figure()
                 ax = fig.add_subplot(projection="3d")
                 
-                eps = 1e-7
                 for i in range(self.M):
                     vtx = self.faces[i]
                     tri = art3d.Poly3DCollection([self.vertices[vtx]*multiplier])
@@ -757,7 +757,7 @@ class PlyModel:
                         x1, y1, z1 = self.vertices[self.faces[i][0]]
                         x2, y2, z2 = self.vertices[self.faces[i][1]]
                         x3, y3, z3 = self.vertices[self.faces[i][2]]
-                        centroid = (np.array([((x1 + x2 + x3) / 3), ((y1 + y2 + y3) / 3), ((z1 + z2 + z3) / 3)]) + eps)*multiplier
+                        centroid = (np.array([((x1 + x2 + x3) / 3), ((y1 + y2 + y3) / 3), ((z1 + z2 + z3) / 3)]))*multiplier
                         X, Y, Z = centroid
                         U, V, W = (self.normal_vectors[i,1:]/np.linalg.norm(self.normal_vectors[i,1:]))*multiplier
                     
@@ -1309,10 +1309,8 @@ class PlyModel:
         Parameters
         ----------
         vis : bool, optional
-            If True the functions plots the polygons that contain edges that are not 
-            connected to exactly two faces on top of the other polygons (given that the
-            mesh is manifold).  
-            The unconnected polygons are red, while the others are green.The default is False.
+            Corresponds with the visualize parameter belonging to the method 
+            PlyModel.Manifold. If not specified, the default value is False.
 
         """
         
